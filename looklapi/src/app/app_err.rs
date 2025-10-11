@@ -74,38 +74,3 @@ impl From<anyhow::Error> for AppError {
         AppError::new_with_errcode(-1, &message)
     }
 }
-
-trait TestTrait {
-    #[proxy]
-    fn proxy_fn(&self) -> Result<(), AppError>;
-    fn other_fn(&self);
-}
-
-struct Test;
-
-impl TestTrait for Test {
-    fn proxy_fn(&self) -> Result<(), AppError> {
-        Err(AppError::new("test error"))
-    }
-    
-    fn other_fn(&self) {
-        todo!()
-    }
-}
-
-struct TestProxy {
-    test: dyn TestTrait,
-}
-
-impl TestTrait for TestProxy {
-    fn proxy_fn(&self) -> Result<(), AppError> {
-        println!("begin test");
-        let result = self.test.proxy_fn();
-        println!("after test");
-        result
-    }
-    
-    fn other_fn(&self) {
-        self.test.other_fn();
-    }
-}
