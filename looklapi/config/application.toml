@@ -1,0 +1,5 @@
+profile = "dev"
+
+[server]
+name = "looklapi-rs"
+port = 7000
