@@ -20,16 +20,20 @@ mod request_context;
 
 #[tokio::main]
 async fn main() {
-    let mut ctx = rudi::Context::auto_register();
-    let app_config = ctx.resolve::<app_config::AppConfig>();
+    // let mut ctx = rudi::Context::auto_register();
+    // let app_config = ctx.resolve::<app_config::AppConfig>();
+    let ctx = rudi::Context::options().eager_create(true).auto_register();
+    let app_config = ctx.get_single::<app_config::AppConfig>();
 
-    common::loggers::init_logger(&app_config).await;
+    common::loggers::init_logger(app_config).await;
     let app = app();
+
+    // AppError::new("here is a error").log();
 
     let listen = format!("0.0.0.0:{}", app_config.server.port);
     let listener = tokio::net::TcpListener::bind(listen).await.unwrap();
     println!("listening on {}", listener.local_addr().unwrap());
-    info!("app start 完成");
+    // info!("app start 完成");
     axum::serve(listener, app).await.unwrap();
 }
 

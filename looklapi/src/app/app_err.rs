@@ -9,6 +9,7 @@ pub struct AppError {
     code: i32,
     message: String,
     backtrace: Backtrace,
+    span_trace: tracing_error::SpanTrace,
 }
 
 impl AppError {
@@ -17,6 +18,7 @@ impl AppError {
             code: -1,
             message: message.to_string(),
             backtrace: Backtrace::capture(),
+            span_trace: tracing_error::SpanTrace::capture(),
         }
     }
 
@@ -25,10 +27,11 @@ impl AppError {
             code,
             message: message.to_string(),
             backtrace: Backtrace::capture(),
+            span_trace: tracing_error::SpanTrace::capture(),
         }
     }
 
-    // 获取错误码
+    /// 获取错误码
     pub fn code(&self) -> i32 {
         self.code
     }
@@ -37,9 +40,13 @@ impl AppError {
         &self.message
     }
 
-    // 获取堆栈跟踪
+    /// 获取堆栈跟踪
     pub fn backtrace(&self) -> &Backtrace {
         &self.backtrace
+    }
+    /// 获取span跟踪
+    pub fn span_trace(&self) -> &tracing_error::SpanTrace {
+        &self.span_trace
     }
 }
 
@@ -72,5 +79,19 @@ impl From<anyhow::Error> for AppError {
         }
 
         AppError::new_with_errcode(-1, &message)
+    }
+}
+
+impl AppError {
+    /// 记录日志
+    pub fn log(&self) {
+        let backtrace = self.backtrace();
+        let backtrace = format!("{}", backtrace);
+        // println!("message={}, {}", self.message(), backtrace);
+        tracing::error!(
+            code = self.code(),
+            backtrace = backtrace.as_str(),
+            message = self.message()
+        );
     }
 }

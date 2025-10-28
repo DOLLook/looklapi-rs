@@ -1,7 +1,9 @@
+use std::backtrace;
+
 use mongodb::options::ConnectionString;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
-use crate::app;
+use crate::app::{self, AppError};
 
 pub async fn init_logger(cfg: &app::app_config::AppConfig) {
     match cfg.logger.default.as_str() {
@@ -38,4 +40,15 @@ pub async fn init_logger(cfg: &app::app_config::AppConfig) {
             panic!("Invalid log type")
         }
     }
+}
+
+pub fn error(err: &AppError) {
+    let backtrace = err.backtrace();
+    let backtrace = format!("{}", backtrace);
+    // println!("message={}, {}", err.message(), backtrace);
+    tracing::error!(
+        code = err.code(),
+        backtrace = backtrace.as_str(),
+        message = err.message()
+    );
 }

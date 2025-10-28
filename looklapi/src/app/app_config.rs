@@ -1,4 +1,4 @@
-use rudi::Singleton;
+use rudi::SingleOwner;
 use serde::Deserialize;
 
 #[derive(Clone, Deserialize)]
@@ -92,7 +92,7 @@ pub struct AppConfig {
     pub dev: Option<Dev>,
 }
 
-#[Singleton]
+#[SingleOwner]
 impl AppConfig {
     #[di]
     fn new() -> Self {
