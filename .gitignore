@@ -21,4 +21,5 @@ target
 #.idea/
 
 application-prod.toml
-.vscode/
+.vscode/*
+!.vscode/launch.json

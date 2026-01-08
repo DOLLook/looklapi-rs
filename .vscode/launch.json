@@ -1,0 +1,21 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Debug Rust",
+      "type": "lldb",
+      "request": "launch",
+      "cargo": {
+        "args": [
+          "build"
+        ],
+        "filter": {
+          "name": "looklapi",
+          "kind": "bin"
+        }
+      },
+      "args": [],
+      "cwd": "${workspaceFolder}"
+    }
+  ]
+}
