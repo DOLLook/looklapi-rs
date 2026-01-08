@@ -8,7 +8,7 @@ use crate::{
 };
 
 /// 测试控制器
-pub struct TestController;
+struct TestController;
 
 impl Controller for TestController {
     fn routes() -> Router {
@@ -102,7 +102,13 @@ async fn test_begin(mut req: Request<Body>, next: axum::middleware::Next) -> imp
 }
 
 async fn test_after(mut req: Request<Body>, next: axum::middleware::Next) -> impl IntoResponse {
-    let req_id = req.headers().get(X_REQUEST_ID).unwrap().to_str().unwrap().to_string();
+    let req_id = req
+        .headers()
+        .get(X_REQUEST_ID)
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
 
     let rsp = next.run(req).await;
     println!("test_after请求ID: {}", req_id);

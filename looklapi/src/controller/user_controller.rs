@@ -7,7 +7,7 @@ use crate::{
 };
 
 /// 用户控制器
-pub struct UserController;
+struct UserController;
 
 impl Controller for UserController {
     fn routes() -> Router {
