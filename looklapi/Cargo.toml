@@ -9,6 +9,7 @@ tokio = { version = "1.47", features = ["full"] }
 rudi = "0.8"
 anyhow = "1.0"
 thiserror = "2.0"
+inventory = "0.3"
 tower = "0.5"
 tower-http = { version = "0.6", features = ["full"] }
 serde = "1.0"

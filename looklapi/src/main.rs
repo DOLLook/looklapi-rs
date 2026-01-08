@@ -1,17 +1,8 @@
-use axum::{
-    Extension, Router,
-    body::Body,
-    http::{Method, Request},
-    response::IntoResponse,
-    routing::*,
-};
+use axum::{Router, http::Method};
 use tower_http::cors::{AllowHeaders, AllowOrigin, CorsLayer};
 use tracing::info;
 
-use crate::{
-    app::{AppError, AppResponse, app_config},
-    request_context::X_REQUEST_ID,
-};
+use crate::app::app_config;
 
 mod app;
 mod common;
@@ -37,34 +28,20 @@ async fn main() {
     axum::serve(listener, app).await.unwrap();
 }
 
-async fn handler(
-    Extension(ctx): Extension<request_context::RequestContext>,
-) -> Result<AppResponse<i32>, AppError> {
-    for (k, v) in ctx.header.iter() {
-        println!("{}: {}", k, v.to_str().unwrap_or("few"));
-    }
-    // panic!("panic123455");
-    try_thing()?;
-    Ok(AppResponse::new(123))
-}
-
-fn try_thing() -> Result<(), anyhow::Error> {
-    anyhow::bail!("it failed!")
-}
-
 fn app() -> Router {
     // let request_id_middleware =
     //     ServiceBuilder::new().layer(SetRequestIdLayer::x_request_id(MakeRequestUuid));
     // send headers from request to response headers
     // .layer(PropagateRequestIdLayer::new(x_request_id));
-
     Router::new()
-        .route(
-            "/",
-            get(handler)
-                .layer(axum::middleware::from_fn(test_after))
-                .layer(axum::middleware::from_fn(test_begin)),
-        )
+        // .route(
+        //     "/",
+        //     get(handler)
+        //         .layer(axum::middleware::from_fn(test_after))
+        //         .layer(axum::middleware::from_fn(test_begin)),
+        // )
+        // 合并所有控制器的路由
+        .merge(controller::collect_routes())
         .layer(
             CorsLayer::new()
                 .allow_origin(AllowOrigin::any())
@@ -81,20 +58,4 @@ fn app() -> Router {
             controller::middleware::panic_handler,
         ))
     // .layer(request_id_middleware)
-}
-
-async fn test_begin(mut req: Request<Body>, next: axum::middleware::Next) -> impl IntoResponse {
-    let req_id = req.headers().get(X_REQUEST_ID).unwrap().to_str().unwrap();
-
-    println!("test_begin请求ID: {}", req_id);
-
-    next.run(req).await
-}
-
-async fn test_after(mut req: Request<Body>, next: axum::middleware::Next) -> impl IntoResponse {
-    let req_id = req.headers().get(X_REQUEST_ID).unwrap().to_str().unwrap();
-
-    println!("test_after请求ID: {}", req_id);
-
-    next.run(req).await
 }
