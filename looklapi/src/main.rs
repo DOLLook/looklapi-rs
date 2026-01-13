@@ -15,9 +15,14 @@ mod request_context;
 async fn main() {
     // let mut ctx = rudi::Context::auto_register();
     // let app_config = ctx.resolve::<app_config::AppConfig>();
-    let ctx = rudi::Context::options().eager_create(true).auto_register();
 
-    let app_config = ctx.get_single::<app_config::AppConfig>();
+    // let ctx = rudi::Context::options().eager_create(true).auto_register();
+    // let app_config = ctx.get_single::<app_config::AppConfig>();
+
+    let rudi_context = app::appcontext::rudi_context::RudiContext::instance();
+    let ctx = rudi_context.read().await;
+    let app_config = ctx.get_ctx().get_single::<app_config::AppConfig>();
+
     common::loggers::init_logger(app_config).await;
 
     app::appcontext::publisher::get_app_event_publisher()
