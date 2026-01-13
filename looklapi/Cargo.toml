@@ -30,4 +30,5 @@ config = "0.15"
 image = "0.25"
 fontdue = "0.7"
 base64 = "0.22"
+uuid = { version = "1.8", features = ["serde", "v4"] }
 reqwest = { version = "0.13", features = ["blocking", "json"] }

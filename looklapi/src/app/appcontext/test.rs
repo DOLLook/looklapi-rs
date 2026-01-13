@@ -4,9 +4,10 @@ use std::time::Duration;
 
 use tokio::time::sleep;
 
-use crate::app::appcontext::events::{AppEventInitCompleted, AppEventBeanInjected};
+use crate::app;
+use crate::app::appcontext::events::{AppEventBeanInjected, AppEventInitCompleted};
 use crate::app::appcontext::observer::AppObserver;
-use crate::app::appcontext::publisher::get_app_event_publisher;
+use crate::app::appcontext::publisher::app_event_publisher;
 
 /// 测试观察者，用于验证事件接收
 struct TestObserver {
@@ -52,18 +53,14 @@ impl AppObserver for TestObserver {
             println!("TestObserver received AppEventBeanInjected");
         }
     }
-
-    // 注意：这个方法在测试中不会被直接调用，因为我们需要传递原始的Arc引用
-    fn subscribe(&self) {
-        // 这个方法在实际使用中会被调用，但在测试中我们需要手动传递Arc引用
-        // 所以这里的实现可能不会被使用
-    }
 }
 
 impl Clone for TestObserver {
     fn clone(&self) -> Self {
         Self {
-            init_completed_called: AtomicBool::new(self.init_completed_called.load(Ordering::SeqCst)),
+            init_completed_called: AtomicBool::new(
+                self.init_completed_called.load(Ordering::SeqCst),
+            ),
             bean_injected_called: AtomicBool::new(self.bean_injected_called.load(Ordering::SeqCst)),
             panic_test: self.panic_test,
         }
@@ -87,30 +84,39 @@ async fn test_global_event_system() {
 
     // 创建测试观察者
     let observer = Arc::new(TestObserver::new(false));
-    
+
     // 订阅事件 - 使用原始的Arc引用
-    let publisher = get_app_event_publisher();
+    let publisher = app_event_publisher();
     publisher.subscribe::<AppEventInitCompleted>(observer.clone());
     publisher.subscribe::<AppEventBeanInjected>(observer.clone());
 
     // 发布 AppEventInitCompleted 事件
-    publisher.publish_event(AppEventInitCompleted);
+    app::appcontext::publisher::publish_event(AppEventInitCompleted);
 
     // 等待事件处理完成（异步）
     sleep(Duration::from_secs(2)).await;
 
     // 验证事件是否被接收
-    assert!(observer.is_init_completed_called(), "AppEventInitCompleted should be received");
-    assert!(!observer.is_bean_injected_called(), "AppEventBeanInjected should not be received yet");
+    assert!(
+        observer.is_init_completed_called(),
+        "AppEventInitCompleted should be received"
+    );
+    assert!(
+        !observer.is_bean_injected_called(),
+        "AppEventBeanInjected should not be received yet"
+    );
 
     // 发布 AppEventBeanInjected 事件
-    publisher.publish_event(AppEventBeanInjected);
+    app::appcontext::publisher::publish_event(AppEventBeanInjected);
 
     // 等待事件处理完成
     sleep(Duration::from_secs(2)).await;
 
     // 验证事件是否被接收
-    assert!(observer.is_bean_injected_called(), "AppEventBeanInjected should be received");
+    assert!(
+        observer.is_bean_injected_called(),
+        "AppEventBeanInjected should be received"
+    );
 
     println!("Global event system test passed!");
 }
@@ -122,13 +128,13 @@ async fn test_panic_capture() {
 
     // 创建会 panic 的测试观察者
     let panic_observer = Arc::new(TestObserver::new(true));
-    
+
     // 订阅事件 - 使用原始的Arc引用
-    let publisher = get_app_event_publisher();
+    let publisher = app_event_publisher();
     publisher.subscribe::<AppEventInitCompleted>(panic_observer.clone());
 
     // 发布事件，应该触发 panic，但系统应该捕获并继续运行
-    publisher.publish_event(AppEventInitCompleted);
+    app::appcontext::publisher::publish_event(AppEventInitCompleted);
 
     // 等待事件处理完成
     sleep(Duration::from_secs(2)).await;
@@ -138,10 +144,13 @@ async fn test_panic_capture() {
     let normal_observer = Arc::new(TestObserver::new(false));
     publisher.subscribe::<AppEventBeanInjected>(normal_observer.clone());
 
-    publisher.publish_event(AppEventBeanInjected);
+    app::appcontext::publisher::publish_event(AppEventBeanInjected);
     sleep(Duration::from_secs(2)).await;
 
-    assert!(normal_observer.is_bean_injected_called(), "Normal observer should receive event");
+    assert!(
+        normal_observer.is_bean_injected_called(),
+        "Normal observer should receive event"
+    );
 
     println!("Panic capture test passed!");
 }
@@ -152,20 +161,23 @@ async fn test_duplicate_registration() {
     println!("Starting duplicate registration test...");
 
     let observer = Arc::new(TestObserver::new(false));
-    
+
     // 多次订阅同一事件
-    let publisher = get_app_event_publisher();
+    let publisher = app_event_publisher();
     publisher.subscribe::<AppEventInitCompleted>(observer.clone());
     publisher.subscribe::<AppEventInitCompleted>(observer.clone()); // 重复注册
 
     // 发布事件
-    publisher.publish_event(AppEventInitCompleted);
+    app::appcontext::publisher::publish_event(AppEventInitCompleted);
 
     // 等待事件处理完成
     sleep(Duration::from_millis(100)).await;
 
     // 验证事件只被接收一次（重复注册不应该导致重复接收）
-    assert!(observer.is_init_completed_called(), "Event should be received");
+    assert!(
+        observer.is_init_completed_called(),
+        "Event should be received"
+    );
 
     println!("Duplicate registration test passed!");
 }

@@ -17,25 +17,36 @@ pub struct AppEventPublisher {
 static EVENT_PUBLISHER: OnceLock<Arc<AppEventPublisher>> = OnceLock::new();
 
 /// 获取应用事件发布器单例
-pub fn get_app_event_publisher() -> Arc<AppEventPublisher> {
-    EVENT_PUBLISHER.get_or_init(|| {
-        Arc::new(AppEventPublisher {
-            observers: Mutex::new(std::collections::HashMap::new()),
-            rt_handle: Handle::current(),
+pub fn app_event_publisher() -> Arc<AppEventPublisher> {
+    EVENT_PUBLISHER
+        .get_or_init(|| {
+            Arc::new(AppEventPublisher {
+                observers: Mutex::new(std::collections::HashMap::new()),
+                rt_handle: Handle::current(),
+            })
         })
-    }).clone()
+        .clone()
+}
+
+/// 发布事件到已注册的观察者
+///
+/// # 参数
+/// * `event` - 要发布的事件
+pub fn publish_event<E: Any + Send + Sync>(event: E) {
+    let publisher = app_event_publisher();
+    publisher.publish_event(event);
 }
 
 impl AppEventPublisher {
     /// 注册观察者到应用事件发布器
-    /// 
+    ///
     /// # 参数
     /// * `observer` - 要注册的观察者
     /// * `E` - 观察者感兴趣的事件类型
-    pub fn subscribe<E: Any + 'static>(&self, observer: Arc<dyn AppObserver + Send + Sync>) {
+    pub fn subscribe<E: Any>(&self, observer: Arc<dyn AppObserver + Send + Sync>) {
         let event_type_id = TypeId::of::<E>();
         let mut observers = self.observers.lock().unwrap();
-        
+
         // 检查观察者是否已经注册
         let mut need_add = true;
         if let Some(obs) = observers.get(&event_type_id) {
@@ -46,9 +57,10 @@ impl AppEventPublisher {
                 }
             }
         }
-        
+
         if need_add {
-            observers.entry(event_type_id)
+            observers
+                .entry(event_type_id)
                 .or_insert_with(Vec::new)
                 .push(observer);
             println!("Observer subscribed for event type: {:?}", event_type_id);
@@ -56,26 +68,26 @@ impl AppEventPublisher {
     }
 
     /// 发布事件到已注册的观察者
-    /// 
+    ///
     /// # 参数
     /// * `event` - 要发布的事件
-    pub fn publish_event<E: Any + Send + Sync + 'static>(&self, event: E) {
+    fn publish_event<E: Any + Send + Sync>(&self, event: E) {
         let event_type_id = TypeId::of::<E>();
         println!("Publishing event with type ID: {:?}", event_type_id);
-        
+
         let observers = self.observers.lock().unwrap();
-        
+
         if let Some(obs) = observers.get(&event_type_id) {
             println!("Found {} observers for event type", obs.len());
             let rt_handle = self.rt_handle.clone();
-            
+
             // 使用Arc包装事件，确保所有观察者都能访问到事件
             let event_arc = std::sync::Arc::new(event);
-            
+
             for observer in obs {
                 let observer_clone = observer.clone();
                 let event_clone = event_arc.clone();
-                
+
                 rt_handle.spawn(async move {
                     // 获取E类型的引用，而不是Arc<E>类型的引用
                     let event_ref: &dyn Any = &*event_clone;

@@ -25,8 +25,9 @@ async fn main() {
 
     common::loggers::init_logger(app_config).await;
 
-    app::appcontext::publisher::get_app_event_publisher()
-        .publish_event(app::appcontext::events::AppEventBeanInjected);
+    // 订阅所有收集到的观察者
+    app::appcontext::observer::register_app_observers();
+    app::appcontext::publisher::publish_event(app::appcontext::events::AppEventBeanInjected);
 
     let app = app();
 
