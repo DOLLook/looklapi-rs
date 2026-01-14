@@ -23,3 +23,4 @@ target
 application-prod.toml
 .vscode/*
 !.vscode/launch.json
+vendor

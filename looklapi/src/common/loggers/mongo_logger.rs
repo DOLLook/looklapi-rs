@@ -1,4 +1,6 @@
 use std::sync::Arc;
+use std::sync::mpsc;
+use std::thread;
 
 use chrono::{DateTime, Local};
 use mongodb::{Client, Collection};
@@ -34,6 +36,7 @@ struct SystemLog {
 #[derive(Clone)]
 pub struct MongoLogger {
     collection: Collection<SystemLog>,
+    tx: mpsc::Sender<SystemLog>,
 }
 
 impl MongoLogger {
@@ -45,12 +48,45 @@ impl MongoLogger {
         let client = Client::with_uri_str(connection_string).await?;
         let database = client.database(database);
         let collection = database.collection(collection);
-        Ok(MongoLogger { collection })
+
+        // 创建通道
+        let (tx, rx) = mpsc::channel();
+
+        // 创建一个新的MongoLogger实例，用于后台线程
+        let bg_logger = MongoLogger {
+            collection: collection.clone(),
+            tx: tx.clone(),
+        };
+
+        // 启动后台线程
+        thread::spawn(move || {
+            // 在后台线程中创建一个Tokio运行时
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+
+            // 在运行时中处理日志条目
+            rt.block_on(async move {
+                bg_logger.process_logs(rx).await;
+            });
+        });
+
+        Ok(MongoLogger { collection, tx })
     }
 
     async fn log(&self, entry: SystemLog) -> Result<(), mongodb::error::Error> {
         self.collection.insert_one(entry).await?;
         Ok(())
+    }
+
+    // 添加处理日志的方法
+    async fn process_logs(&self, rx: mpsc::Receiver<SystemLog>) {
+        for entry in rx {
+            if let Err(e) = self.log(entry).await {
+                eprintln!("Failed to log to MongoDB: {}", e);
+            }
+        }
     }
 }
 
@@ -125,11 +161,10 @@ where
         };
 
         let logger = self.mongo_logger.clone();
-        tokio::spawn(async move {
-            if let Err(e) = logger.log(entry).await {
-                eprintln!("Failed to log to MongoDB: {}", e);
-            }
-        });
+        // 发送日志条目到通道
+        if let Err(e) = logger.tx.send(entry) {
+            eprintln!("Failed to send log to background thread: {}", e);
+        }
 
         Ok(())
     }
