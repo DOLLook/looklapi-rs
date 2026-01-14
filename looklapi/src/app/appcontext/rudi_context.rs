@@ -26,14 +26,12 @@ impl RudiContext {
 // 实现单例模式
 static RUDI_CONTEXT: OnceLock<Arc<RwLock<RudiContext>>> = OnceLock::new();
 
-impl RudiContext {
-    pub fn instance() -> Arc<RwLock<RudiContext>> {
-        RUDI_CONTEXT
-            .get_or_init(|| {
-                let ctx = rudi::Context::options().eager_create(true).auto_register();
-                let rudi_context = RudiContext::new(ctx);
-                Arc::new(RwLock::new(rudi_context))
-            })
-            .clone()
-    }
+pub fn instance() -> Arc<RwLock<RudiContext>> {
+    RUDI_CONTEXT
+        .get_or_init(|| {
+            let ctx = rudi::Context::options().eager_create(true).auto_register();
+            let rudi_context = RudiContext::new(ctx);
+            Arc::new(RwLock::new(rudi_context))
+        })
+        .clone()
 }

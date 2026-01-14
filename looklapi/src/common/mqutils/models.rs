@@ -43,7 +43,8 @@ impl RabbitMqConnData {
     /// 增加channel数
     pub fn inc_chan(&self) {
         self.live_ch.fetch_add(1, Ordering::SeqCst);
-        self.last_use_mills.store(Utc::now().timestamp_millis(), Ordering::SeqCst);
+        self.last_use_mills
+            .store(Utc::now().timestamp_millis(), Ordering::SeqCst);
     }
 
     /// 减少channel数
@@ -94,12 +95,18 @@ impl MqChannel {
 
     /// 设置通道状态
     pub fn set_status(&self, new_status: ChannelStatus) {
-        *self.status.lock().unwrap() = new_status;
+        if let Ok(mut status_guard) = self.status.lock() {
+            *status_guard = new_status;
+        }
     }
 
     /// 获取通道状态
     pub fn get_status(&self) -> ChannelStatus {
-        *self.status.lock().unwrap()
+        if let Ok(status_guard) = self.status.lock() {
+            *status_guard
+        } else {
+            ChannelStatus::Close
+        }
     }
 }
 

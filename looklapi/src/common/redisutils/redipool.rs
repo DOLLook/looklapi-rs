@@ -28,7 +28,7 @@ impl RedisPool {
 
         if !self.clients.contains_key(&db_index) {
             // 从AppConfig中获取redis配置
-            let rudi_context = appcontext::rudi_context::RudiContext::instance();
+            let rudi_context = appcontext::rudi_context::instance();
             let context = rudi_context.read().await;
             let app_config = context.get_ctx().get_single::<AppConfig>();
             let redis_config = app_config.redis.as_ref().ok_or_else(|| {

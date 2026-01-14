@@ -7,24 +7,11 @@ use chrono::Utc;
 use lapin::{Connection, ConnectionProperties};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
-use std::sync::mpsc;
-use std::sync::{Arc, Mutex, OnceLock, RwLock};
-use std::thread::{self, spawn};
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
+use tokio::sync::mpsc;
+use tokio::sync::{Mutex, RwLock};
 use tracing;
-
-// 延迟执行宏
-macro_rules! defer {
-    ($($body:tt)*) => {
-        struct Defer<F: Fn()>(F);
-        impl<F: Fn()> Drop for Defer<F> {
-            fn drop(&mut self) {
-                (self.0)();
-            }
-        }
-        let _defer = Defer(|| { $($body)* });
-    };
-}
 
 unsafe impl Send for RabbitmqConnPool {}
 unsafe impl Sync for RabbitmqConnPool {}
@@ -66,7 +53,7 @@ pub struct RabbitmqConnPool {
     /// 发布连接状态锁
     pub_lock: Arc<AtomicI32>,
     /// 发布channel管道
-    pub_ch_pipeline: Arc<Mutex<mpsc::Sender<Arc<MqChannel>>>>,
+    pub_ch_pipeline: Arc<mpsc::Sender<Arc<MqChannel>>>,
     /// 发布channel管道接收端
     pub_ch_pipeline_rx: Arc<Mutex<mpsc::Receiver<Arc<MqChannel>>>>,
     /// 消费连接
@@ -81,13 +68,13 @@ pub struct RabbitmqConnPool {
 
 impl RabbitmqConnPool {
     pub fn new() -> Self {
-        let (tx, rx) = mpsc::channel();
+        let (tx, rx) = mpsc::channel(1);
         Self {
             conn_str: Arc::new(Mutex::new(String::new())),
             pub_conns: RwLock::new(HashMap::new()),
             pub_chs: Mutex::new(Vec::new()),
             pub_lock: Arc::new(AtomicI32::new(0)),
-            pub_ch_pipeline: Arc::new(Mutex::new(tx)),
+            pub_ch_pipeline: Arc::new(tx),
             pub_ch_pipeline_rx: Arc::new(Mutex::new(rx)),
             rec_conns: Mutex::new(Vec::new()),
             rec_chs: Mutex::new(Vec::new()),
@@ -112,30 +99,30 @@ impl RabbitmqConnPool {
             return; // 已经初始化过了
         }
 
-        let rudi_context = app::appcontext::rudi_context::RudiContext::instance();
+        let rudi_context = app::appcontext::rudi_context::instance();
         let ctx = rudi_context.read().await;
         let app_config = ctx.get_ctx().get_single::<app_config::AppConfig>();
         // 修改 conn_str 字段
         if let Some(ref rabbitmq_config) = app_config.rabbitmq {
-            let mut conn_str_guard = pool.conn_str.lock().unwrap();
+            let mut conn_str_guard = pool.conn_str.lock().await;
             *conn_str_guard = rabbitmq_config.address.clone();
         }
 
         // 启动发布通道管道填充协程
         let pool_clone = pool.clone();
-        thread::spawn(move || {
+        tokio::spawn(async move {
             loop {
-                pool_clone.push_pub_ch_to_pipe();
-                thread::sleep(Duration::from_millis(100)); // 避免CPU占用过高
+                pool_clone.push_pub_ch_to_pipe().await;
+                tokio::time::sleep(Duration::from_millis(100)).await; // 避免CPU占用过高
             }
         });
 
         // 启动定时清理任务
         let pool_clone = pool.clone();
-        thread::spawn(move || {
+        tokio::spawn(async move {
             loop {
-                thread::sleep(Duration::from_secs(60)); // 每分钟执行一次
-                pool_clone.clear_idl_pub_conn();
+                tokio::time::sleep(Duration::from_secs(60)).await; // 每分钟执行一次
+                pool_clone.clear_idl_pub_conn().await;
             }
         });
 
@@ -145,16 +132,16 @@ impl RabbitmqConnPool {
     // 获取发布通道
     pub async fn get_pub_channel(&self) -> Result<Arc<MqChannel>, Box<dyn std::error::Error>> {
         // 从管道中获取通道
-        let mut rx = self.pub_ch_pipeline_rx.lock().unwrap();
-        match rx.recv_timeout(Duration::from_secs(5)) {
-            Ok(ch) => {
+        let mut rx = self.pub_ch_pipeline_rx.lock().await;
+        match rx.recv().await {
+            Some(ch) => {
                 // 检查通道是否有效
                 if ch.get_status() != ChannelStatus::Close {
                     return Ok(ch);
                 }
             }
-            Err(err) => {
-                tracing::error!("从管道获取发布通道失败: {:?}", err);
+            None => {
+                tracing::error!("从管道获取发布通道失败: 通道已关闭");
             }
         }
 
@@ -162,8 +149,9 @@ impl RabbitmqConnPool {
         let conn = self.get_or_create_pub_conn().await?;
         let channel = conn.conn.create_channel().await?;
         let mq_channel = Arc::new(MqChannel::new(conn.clone(), channel));
+        conn.inc_chan(); // 增加通道计数
 
-        let mut pub_chs = self.pub_chs.lock().unwrap();
+        let mut pub_chs = self.pub_chs.lock().await;
         pub_chs.push(mq_channel.clone());
         Ok(mq_channel)
     }
@@ -171,7 +159,7 @@ impl RabbitmqConnPool {
     // 获取消费通道
     pub async fn get_rec_channel(&self) -> Result<Arc<MqChannel>, Box<dyn std::error::Error>> {
         // 尝试从现有通道中获取空闲通道
-        let mut rec_chs = self.rec_chs.lock().unwrap();
+        let mut rec_chs = self.rec_chs.lock().await;
         for i in 0..rec_chs.len() {
             let ch = &rec_chs[i];
             if ch.get_status() == ChannelStatus::Idle {
@@ -186,6 +174,7 @@ impl RabbitmqConnPool {
         let conn = self.get_or_create_rec_conn().await?;
         let channel = conn.conn.create_channel().await?;
         let mq_channel = Arc::new(MqChannel::new(conn.clone(), channel));
+        conn.inc_chan(); // 增加通道计数
 
         rec_chs.push(mq_channel.clone());
         Ok(mq_channel)
@@ -195,7 +184,7 @@ impl RabbitmqConnPool {
     async fn get_or_create_pub_conn(
         &self,
     ) -> Result<Arc<RabbitMqConnData>, Box<dyn std::error::Error>> {
-        let pub_conns = self.pub_conns.read().unwrap();
+        let pub_conns = self.pub_conns.read().await;
 
         // 过滤出有效的连接（通道数小于限制且连接未关闭）
         let mut valid_conns = Vec::new();
@@ -217,7 +206,7 @@ impl RabbitmqConnPool {
         }
 
         // 检查连接池是否已满
-        let pub_conns = self.pub_conns.read().unwrap();
+        let pub_conns = self.pub_conns.read().await;
         if pub_conns.len() as i32 >= CONN_LIMIT {
             return Err("连接池已满".into());
         }
@@ -225,13 +214,13 @@ impl RabbitmqConnPool {
 
         // 创建新连接
         let conn_str = {
-            let conn_str_guard = self.conn_str.lock().unwrap();
+            let conn_str_guard = self.conn_str.lock().await;
             conn_str_guard.clone()
         };
         let conn = Connection::connect(&conn_str, ConnectionProperties::default()).await?;
         let conn_data = Arc::new(RabbitMqConnData::new(Arc::new(conn)));
 
-        let mut pub_conns = self.pub_conns.write().unwrap();
+        let mut pub_conns = self.pub_conns.write().await;
         pub_conns.insert(conn_data.guid.clone(), conn_data.clone());
         Ok(conn_data)
     }
@@ -240,7 +229,7 @@ impl RabbitmqConnPool {
     async fn get_or_create_rec_conn(
         &self,
     ) -> Result<Arc<RabbitMqConnData>, Box<dyn std::error::Error>> {
-        let mut rec_conns = self.rec_conns.lock().unwrap();
+        let mut rec_conns = self.rec_conns.lock().await;
         for conn in rec_conns.iter() {
             if conn.live_ch.load(Ordering::SeqCst) < CH_LIMIT_FOR_CONN {
                 return Ok(conn.clone());
@@ -249,7 +238,7 @@ impl RabbitmqConnPool {
 
         // 创建新连接
         let conn_str = {
-            let conn_str_guard = self.conn_str.lock().unwrap();
+            let conn_str_guard = self.conn_str.lock().await;
             conn_str_guard.clone()
         };
         let conn = Connection::connect(&conn_str, ConnectionProperties::default()).await?;
@@ -266,7 +255,7 @@ impl RabbitmqConnPool {
     }
 
     // 向管道推送发布channel
-    pub fn push_pub_ch_to_pipe(&self) {
+    pub async fn push_pub_ch_to_pipe(&self) {
         // 尝试获取锁
         for _ in 0..3 {
             if self
@@ -276,12 +265,12 @@ impl RabbitmqConnPool {
             {
                 break;
             }
-            thread::sleep(Duration::from_millis(100));
+            tokio::time::sleep(Duration::from_millis(100)).await;
         }
 
         // 查找空闲通道
         let mut idle_ch: Option<Arc<MqChannel>> = None;
-        let mut pub_chs = self.pub_chs.lock().unwrap();
+        let mut pub_chs = self.pub_chs.lock().await;
         for ch in pub_chs.iter() {
             if ch.get_status() == ChannelStatus::Idle {
                 idle_ch = Some(ch.clone());
@@ -298,15 +287,14 @@ impl RabbitmqConnPool {
             self.pub_lock.store(0, Ordering::SeqCst);
 
             // 推送通道到管道
-            let tx = self.pub_ch_pipeline.lock().unwrap();
-            if let Err(err) = tx.send(ch) {
+            if let Err(err) = self.pub_ch_pipeline.send(ch).await {
                 tracing::error!("推送发布通道到管道失败: {:?}", err);
             }
             return;
         }
 
         // 未找到空闲通道，创建新通道
-        let conn_result = futures::executor::block_on(self.get_or_create_pub_conn());
+        let conn_result = self.get_or_create_pub_conn().await;
         if let Err(err) = conn_result {
             tracing::error!("获取发布连接失败: {:?}", err);
             self.pub_lock.store(0, Ordering::SeqCst);
@@ -314,7 +302,7 @@ impl RabbitmqConnPool {
         }
 
         let conn = conn_result.unwrap();
-        let channel_result = futures::executor::block_on(conn.conn.create_channel());
+        let channel_result = conn.conn.create_channel().await;
         if let Err(err) = channel_result {
             tracing::error!("创建发布通道失败: {:?}", err);
             self.pub_lock.store(0, Ordering::SeqCst);
@@ -331,14 +319,13 @@ impl RabbitmqConnPool {
         self.pub_lock.store(0, Ordering::SeqCst);
 
         // 推送通道到管道
-        let tx = self.pub_ch_pipeline.lock().unwrap();
-        if let Err(err) = tx.send(mq_channel) {
+        if let Err(err) = self.pub_ch_pipeline.send(mq_channel).await {
             tracing::error!("推送发布通道到管道失败: {:?}", err);
         }
     }
 
     // 清理空闲发布连接
-    pub fn clear_idl_pub_conn(&self) {
+    pub async fn clear_idl_pub_conn(&self) {
         // 尝试获取锁
         let mut hold_lock = false;
         for _ in 0..3 {
@@ -350,19 +337,16 @@ impl RabbitmqConnPool {
                 hold_lock = true;
                 break;
             }
-            thread::sleep(Duration::from_secs(1));
+            tokio::time::sleep(Duration::from_secs(1)).await;
         }
 
         if !hold_lock {
             return;
         }
 
-        // 确保释放锁
-        defer! { self.pub_lock.store(0, Ordering::SeqCst); }
-
         let now = Instant::now();
-        let mut pub_chs = self.pub_chs.lock().unwrap();
-        let mut pub_conns = self.pub_conns.write().unwrap();
+        let mut pub_chs = self.pub_chs.lock().await;
+        let mut pub_conns = self.pub_conns.write().await;
 
         // 倒序遍历，方便删除
         let mut i = pub_chs.len();
@@ -376,7 +360,7 @@ impl RabbitmqConnPool {
             }
 
             // 检查连接是否关闭
-            let conn_closed = false; // 这里需要根据实际情况判断连接是否关闭
+            let conn_closed = false; // 暂时保持为false，后续可通过lapin的Connection状态检查实现
             if conn_closed {
                 // 从连接池中删除连接
                 pub_conns.remove(&ch.conn.guid);

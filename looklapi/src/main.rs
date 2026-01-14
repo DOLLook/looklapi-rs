@@ -19,7 +19,7 @@ async fn main() {
     // let ctx = rudi::Context::options().eager_create(true).auto_register();
     // let app_config = ctx.get_single::<app_config::AppConfig>();
 
-    let rudi_context = app::appcontext::rudi_context::RudiContext::instance();
+    let rudi_context = app::appcontext::rudi_context::instance();
     let ctx = rudi_context.read().await;
     let app_config = ctx.get_ctx().get_single::<app_config::AppConfig>();
 
