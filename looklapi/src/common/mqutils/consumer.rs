@@ -699,7 +699,7 @@ impl ConsumerBinder {
 
     // 初始化消费者
     pub async fn init_consumers(&mut self) {
-        if HAS_CONSUMER_BIND.load(std::sync::atomic::Ordering::SeqCst) {
+        if HAS_CONSUMER_BIND.load(std::sync::atomic::Ordering::Relaxed) {
             return;
         }
 
@@ -764,7 +764,7 @@ impl ConsumerBinder {
             self.bind_consumer(consumer.clone()).await;
         }
 
-        HAS_CONSUMER_BIND.store(true, std::sync::atomic::Ordering::SeqCst);
+        HAS_CONSUMER_BIND.store(true, std::sync::atomic::Ordering::Relaxed);
         tracing::info!("mq init complete");
     }
 }

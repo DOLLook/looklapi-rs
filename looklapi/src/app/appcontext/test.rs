@@ -26,16 +26,16 @@ impl TestObserver {
     }
 
     fn reset(&self) {
-        self.init_completed_called.store(false, Ordering::SeqCst);
-        self.bean_injected_called.store(false, Ordering::SeqCst);
+        self.init_completed_called.store(false, Ordering::Relaxed);
+        self.bean_injected_called.store(false, Ordering::Relaxed);
     }
 
     fn is_init_completed_called(&self) -> bool {
-        self.init_completed_called.load(Ordering::SeqCst)
+        self.init_completed_called.load(Ordering::Relaxed)
     }
 
     fn is_bean_injected_called(&self) -> bool {
-        self.bean_injected_called.load(Ordering::SeqCst)
+        self.bean_injected_called.load(Ordering::Relaxed)
     }
 }
 
@@ -46,10 +46,10 @@ impl AppObserver for TestObserver {
         }
 
         if event.downcast_ref::<AppEventInitCompleted>().is_some() {
-            self.init_completed_called.store(true, Ordering::SeqCst);
+            self.init_completed_called.store(true, Ordering::Relaxed);
             println!("TestObserver received AppEventInitCompleted");
         } else if event.downcast_ref::<AppEventBeanInjected>().is_some() {
-            self.bean_injected_called.store(true, Ordering::SeqCst);
+            self.bean_injected_called.store(true, Ordering::Relaxed);
             println!("TestObserver received AppEventBeanInjected");
         }
     }
@@ -59,9 +59,9 @@ impl Clone for TestObserver {
     fn clone(&self) -> Self {
         Self {
             init_completed_called: AtomicBool::new(
-                self.init_completed_called.load(Ordering::SeqCst),
+                self.init_completed_called.load(Ordering::Relaxed),
             ),
-            bean_injected_called: AtomicBool::new(self.bean_injected_called.load(Ordering::SeqCst)),
+            bean_injected_called: AtomicBool::new(self.bean_injected_called.load(Ordering::Relaxed)),
             panic_test: self.panic_test,
         }
     }

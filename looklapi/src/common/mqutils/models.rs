@@ -42,14 +42,14 @@ pub struct RabbitMqConnData {
 impl RabbitMqConnData {
     /// 增加channel数
     pub fn inc_chan(&self) {
-        self.live_ch.fetch_add(1, Ordering::SeqCst);
+        self.live_ch.fetch_add(1, Ordering::Relaxed);
         self.last_use_mills
-            .store(Utc::now().timestamp_millis(), Ordering::SeqCst);
+            .store(Utc::now().timestamp_millis(), Ordering::Relaxed);
     }
 
     /// 减少channel数
     pub fn dec_chan(&self) {
-        self.live_ch.fetch_sub(1, Ordering::SeqCst);
+        self.live_ch.fetch_sub(1, Ordering::Relaxed);
     }
 
     pub fn new(conn: Arc<Connection>) -> Self {
@@ -90,7 +90,7 @@ impl MqChannel {
     /// 更新最近一次使用时间
     pub fn update_last_use_mills(&self) {
         self.last_use_mills
-            .store(Utc::now().timestamp_millis(), Ordering::SeqCst);
+            .store(Utc::now().timestamp_millis(), Ordering::Relaxed);
     }
 
     /// 设置通道状态

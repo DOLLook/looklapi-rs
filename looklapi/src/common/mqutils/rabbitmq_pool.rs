@@ -4,6 +4,7 @@ use crate::app::appcontext::observer::AppObserver;
 use crate::common::mqutils::models::{ChannelStatus, MqChannel, RabbitMqConnData};
 use crate::{app, register_observer_for};
 use chrono::Utc;
+use futures::StreamExt;
 use lapin::{Connection, ConnectionProperties};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
@@ -95,7 +96,7 @@ impl RabbitmqConnPool {
     /// 初始化连接池
     pub async fn init() {
         let pool = RabbitmqConnPool::get_instance();
-        if pool.initialized.swap(true, Ordering::SeqCst) {
+        if pool.initialized.swap(true, Ordering::Relaxed) {
             return; // 已经初始化过了
         }
 
@@ -133,15 +134,18 @@ impl RabbitmqConnPool {
     pub async fn get_pub_channel(&self) -> Result<Arc<MqChannel>, Box<dyn std::error::Error>> {
         // 从管道中获取通道
         let mut rx = self.pub_ch_pipeline_rx.lock().await;
-        match rx.recv().await {
-            Some(ch) => {
+        match rx.try_recv() {
+            Ok(ch) => {
                 // 检查通道是否有效
                 if ch.get_status() != ChannelStatus::Close {
                     return Ok(ch);
                 }
             }
-            None => {
-                tracing::error!("从管道获取发布通道失败: 通道已关闭");
+            Err(mpsc::error::TryRecvError::Empty) => {
+                // tracing::error!("从管道获取发布通道失败: 通道已关闭");
+            }
+            Err(mpsc::error::TryRecvError::Disconnected) => {
+                // tracing::error!("从管道获取发布通道失败: 通道已断开");
             }
         }
 
@@ -187,26 +191,25 @@ impl RabbitmqConnPool {
         let pub_conns = self.pub_conns.read().await;
 
         // 过滤出有效的连接（通道数小于限制且连接未关闭）
-        let mut valid_conns = Vec::new();
-        for (_, conn) in pub_conns.iter() {
-            if conn.live_ch.load(Ordering::SeqCst) < CH_LIMIT_FOR_CONN {
-                valid_conns.push(conn.clone());
-            }
-        }
-        drop(pub_conns);
-
+        let mut valid_conns = pub_conns
+            .iter()
+            .filter(|(_, conn)| {
+                conn.live_ch.load(Ordering::Relaxed) < CH_LIMIT_FOR_CONN
+                    && conn.conn.status().connected()
+            })
+            .map(|(_, conn)| conn.clone())
+            .collect::<Vec<_>>();
         // 如果有有效连接，选择通道数最多的连接（与Go版本逻辑一致）
         if !valid_conns.is_empty() {
             valid_conns.sort_by(|a, b| {
                 b.live_ch
-                    .load(Ordering::SeqCst)
-                    .cmp(&a.live_ch.load(Ordering::SeqCst))
+                    .load(Ordering::Relaxed)
+                    .cmp(&a.live_ch.load(Ordering::Relaxed))
             });
             return Ok(valid_conns[0].clone());
         }
 
         // 检查连接池是否已满
-        let pub_conns = self.pub_conns.read().await;
         if pub_conns.len() as i32 >= CONN_LIMIT {
             return Err("连接池已满".into());
         }
@@ -218,6 +221,14 @@ impl RabbitmqConnPool {
             conn_str_guard.clone()
         };
         let conn = Connection::connect(&conn_str, ConnectionProperties::default()).await?;
+        let mut evnet_listener = conn.events_listener();
+        tokio::spawn(async move {
+            while let Some(event) = evnet_listener.next().await {
+                // 监听连接事件
+                tracing::info!("RabbitMQ connection event: {:?}", event);
+            }
+        });
+
         let conn_data = Arc::new(RabbitMqConnData::new(Arc::new(conn)));
 
         let mut pub_conns = self.pub_conns.write().await;
@@ -231,7 +242,7 @@ impl RabbitmqConnPool {
     ) -> Result<Arc<RabbitMqConnData>, Box<dyn std::error::Error>> {
         let mut rec_conns = self.rec_conns.lock().await;
         for conn in rec_conns.iter() {
-            if conn.live_ch.load(Ordering::SeqCst) < CH_LIMIT_FOR_CONN {
+            if conn.live_ch.load(Ordering::Relaxed) < CH_LIMIT_FOR_CONN {
                 return Ok(conn.clone());
             }
         }
@@ -260,7 +271,7 @@ impl RabbitmqConnPool {
         for _ in 0..3 {
             if self
                 .pub_lock
-                .compare_exchange(0, 1, Ordering::SeqCst, Ordering::SeqCst)
+                .compare_exchange(0, 1, Ordering::Relaxed, Ordering::Relaxed)
                 .is_ok()
             {
                 break;
@@ -272,32 +283,42 @@ impl RabbitmqConnPool {
         let mut idle_ch: Option<Arc<MqChannel>> = None;
         let mut pub_chs = self.pub_chs.lock().await;
         for ch in pub_chs.iter() {
-            if ch.get_status() == ChannelStatus::Idle {
+            let status = ch.get_status();
+            if status != ChannelStatus::Busy
+                && status != ChannelStatus::Close
+                && ch.conn.conn.status().connected()
+            {
                 idle_ch = Some(ch.clone());
                 break;
             }
         }
 
         if let Some(ch) = idle_ch {
+            let prev_status = ch.get_status();
+
             // 标记为使用中
             ch.set_status(ChannelStatus::Busy);
             ch.update_last_use_mills();
 
+            let ch_clone = ch.clone();
+
             // 释放锁
-            self.pub_lock.store(0, Ordering::SeqCst);
+            self.pub_lock.store(0, Ordering::Relaxed);
 
             // 推送通道到管道
             if let Err(err) = self.pub_ch_pipeline.send(ch).await {
                 tracing::error!("推送发布通道到管道失败: {:?}", err);
+            } else {
+                ch_clone.set_status(prev_status);
+                return;
             }
-            return;
         }
 
         // 未找到空闲通道，创建新通道
         let conn_result = self.get_or_create_pub_conn().await;
         if let Err(err) = conn_result {
             tracing::error!("获取发布连接失败: {:?}", err);
-            self.pub_lock.store(0, Ordering::SeqCst);
+            self.pub_lock.store(0, Ordering::Relaxed);
             return;
         }
 
@@ -305,7 +326,7 @@ impl RabbitmqConnPool {
         let channel_result = conn.conn.create_channel().await;
         if let Err(err) = channel_result {
             tracing::error!("创建发布通道失败: {:?}", err);
-            self.pub_lock.store(0, Ordering::SeqCst);
+            self.pub_lock.store(0, Ordering::Relaxed);
             return;
         }
 
@@ -316,7 +337,7 @@ impl RabbitmqConnPool {
         conn.inc_chan();
 
         // 释放锁
-        self.pub_lock.store(0, Ordering::SeqCst);
+        self.pub_lock.store(0, Ordering::Relaxed);
 
         // 推送通道到管道
         if let Err(err) = self.pub_ch_pipeline.send(mq_channel).await {
@@ -331,7 +352,7 @@ impl RabbitmqConnPool {
         for _ in 0..3 {
             if self
                 .pub_lock
-                .compare_exchange(0, 1, Ordering::SeqCst, Ordering::SeqCst)
+                .compare_exchange(0, 1, Ordering::Relaxed, Ordering::Relaxed)
                 .is_ok()
             {
                 hold_lock = true;
@@ -344,7 +365,7 @@ impl RabbitmqConnPool {
             return;
         }
 
-        let now = Instant::now();
+        // let now = Instant::now();
         let mut pub_chs = self.pub_chs.lock().await;
         let mut pub_conns = self.pub_conns.write().await;
 
@@ -355,13 +376,12 @@ impl RabbitmqConnPool {
             let ch = &pub_chs[i];
 
             // 跳过忙碌的通道
-            if ch.get_status() == ChannelStatus::Busy {
+            if ch.get_status() == ChannelStatus::Busy && ch.conn.conn.status().connected() {
                 continue;
             }
 
             // 检查连接是否关闭
-            let conn_closed = false; // 暂时保持为false，后续可通过lapin的Connection状态检查实现
-            if conn_closed {
+            if ch.conn.conn.status().closed() {
                 // 从连接池中删除连接
                 pub_conns.remove(&ch.conn.guid);
                 // 从通道池中删除通道
@@ -375,7 +395,7 @@ impl RabbitmqConnPool {
                 do_clear = true;
             } else {
                 // 检查空闲时间是否超过阈值
-                let ch_last_use = ch.last_use_mills.load(Ordering::SeqCst);
+                let ch_last_use = ch.last_use_mills.load(Ordering::Relaxed);
                 let now_mills = Utc::now().timestamp_millis();
                 let idle_millis = now_mills - ch_last_use;
                 if idle_millis >= (CH_IDLE_TIMEOUT_MIN * 60 * 1000) as i64 {
@@ -387,26 +407,41 @@ impl RabbitmqConnPool {
             if do_clear {
                 let conn = ch.conn.clone();
                 let conn_guid = ch.conn.guid.clone();
-                let live_ch = conn.live_ch.load(Ordering::SeqCst);
+                let live_ch = conn.live_ch.load(Ordering::Relaxed);
 
                 if live_ch <= 1 {
                     // 检查连接空闲时间是否超过阈值
-                    let conn_last_use = conn.last_use_mills.load(Ordering::SeqCst);
+                    let conn_last_use = conn.last_use_mills.load(Ordering::Relaxed);
                     let now_mills = Utc::now().timestamp_millis();
                     let conn_idle_millis = now_mills - conn_last_use;
                     if conn_idle_millis >= (CONN_IDLE_TIMEOUT_MIN * 60 * 1000) as i64 {
+                        let ch_clone = ch.clone();
+
                         // 从通道池中删除通道
                         pub_chs.remove(i);
                         // 减少通道计数
                         conn.dec_chan();
                         // 从连接池中删除连接
                         pub_conns.remove(&conn_guid);
+
+                        if ch_clone.get_status() == ChannelStatus::Timeout {
+                            let _ = ch_clone.channel.close(0, "关闭空闲通道").await;
+                        }
+                        if !ch_clone.conn.conn.status().closed() {
+                            let _ = ch_clone.conn.conn.close(0, "关闭空闲连接").await;
+                        }
                     }
                 } else {
+                    let ch_clone = ch.clone();
                     // 仅关闭通道
                     pub_chs.remove(i);
                     // 减少通道计数
                     conn.dec_chan();
+                    if ch_clone.get_status() == ChannelStatus::Timeout
+                        && !conn.conn.status().closed()
+                    {
+                        let _ = ch_clone.channel.close(0, "关闭空闲通道").await;
+                    }
                 }
             }
         }
