@@ -1,11 +1,11 @@
 [mysql]
-uri = "root:123456@tcp(127.0.0.1:3306)/test?charset=utf8&timeout=30s"
+uri = "root:123456@tcp(127.0.0.1:3306)/hi-nature-250826?charset=utf8&timeout=30s"
 
 [mssql]
-uri = "sqlserver://sa:123456@127.0.0.1?database=test&connection+timeout=30"
+uri = "sqlserver://sa:Nature123!@127.0.0.1?database=hi-nature-250826&connection+timeout=30"
 
 [mongodb]
-uri = "mongodb://admin:123456@127.0.0.1:27018/test?replicaSet=rs0&authSource=admin"
+uri = "mongodb://admin:123456@127.0.0.1:27018/hi-nature-250826?replicaSet=rs0&authSource=admin"
 
 [redis]
 host = "127.0.0.1"
@@ -14,7 +14,7 @@ password = "123456"
 timeout = 10000     # 毫秒
 
 [rabbitmq]
-address = "amqp://admin:123456@127.0.0.1:5672/test"
+address = "amqp://admin:123456@127.0.0.1:5672/yq"
 
 [consul]
 host = "127.0.0.1"
